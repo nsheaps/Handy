@@ -936,6 +936,55 @@ async isLaptop() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getTranscriptionApiStatus() : Promise<TranscriptionApiStatus> {
+    return await TAURI_INVOKE("get_transcription_api_status");
+},
+async setTranscriptionApiEnabled(enabled: boolean) : Promise<Result<TranscriptionApiStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_transcription_api_enabled", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Change where the server listens. A non-loopback address is accepted only
+ * together with `allow_non_loopback`, which the UI sets after the user
+ * confirms the exposure; moving back to loopback clears that confirmation.
+ */
+async setTranscriptionApiBinding(bindAddress: string, port: number, allowNonLoopback: boolean) : Promise<Result<TranscriptionApiStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_transcription_api_binding", { bindAddress, port, allowNonLoopback }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setTranscriptionApiKeepWarmSecs(secs: number) : Promise<void> {
+    await TAURI_INVOKE("set_transcription_api_keep_warm_secs", { secs });
+},
+/**
+ * Show the current token so the user can copy it into a client.
+ */
+async revealTranscriptionApiToken() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reveal_transcription_api_token") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace the token. The old one stops working at once.
+ */
+async rotateTranscriptionApiToken() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rotate_transcription_api_token") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -945,11 +994,13 @@ async isLaptop() : Promise<Result<boolean, string>> {
 export const events = __makeEvents__<{
 historyUpdatePayload: HistoryUpdatePayload,
 streamPhaseEvent: StreamPhaseEvent,
-streamTextEvent: StreamTextEvent
+streamTextEvent: StreamTextEvent,
+transcriptionApiStatus: TranscriptionApiStatus
 }>({
 historyUpdatePayload: "history-update-payload",
 streamPhaseEvent: "stream-phase-event",
-streamTextEvent: "stream-text-event"
+streamTextEvent: "stream-text-event",
+transcriptionApiStatus: "transcription-api-status"
 })
 
 /** user-defined constants **/
@@ -1025,7 +1076,14 @@ vad_backend?: VadBackend;
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle }
+overlay_style?: OverlayStyle; 
+/**
+ * Optional OpenAI-compatible transcription HTTP server. Off by default
+ * for fresh installs and for stores written before it existed. The bearer
+ * token is deliberately not part of settings: it lives in the OS
+ * credential store (see `transcription_api::auth`).
+ */
+transcription_api?: TranscriptionApiSettings }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1212,6 +1270,50 @@ export type StreamWorkKind = "transcribing" | "polishing"
  */
 export type Theme = "system" | "light" | "dark"
 export type TranscribeAcceleratorSetting = "auto" | "cpu" | "gpu"
+/**
+ * Persisted, non-secret configuration of the transcription API server.
+ */
+export type TranscriptionApiSettings = { 
+/**
+ * Whether the server runs while Handy is running. Defaults to `false`.
+ */
+enabled?: boolean; 
+/**
+ * IP literal to listen on. Defaults to loopback.
+ */
+bind_address?: string; port?: number; 
+/**
+ * The user's explicit confirmation that listening beyond loopback is
+ * intended. A non-loopback `bind_address` is refused without it.
+ */
+allow_non_loopback?: boolean; 
+/**
+ * Seconds the model stays loaded after the last API request when the
+ * desktop "unload immediately" policy is active. `0` follows the desktop
+ * policy exactly.
+ */
+keep_warm_secs?: number }
+export type TranscriptionApiState = "disabled" | "starting" | "running" | "stopping" | "failed"
+/**
+ * What the settings UI shows. Never contains the token.
+ */
+export type TranscriptionApiStatus = { state: TranscriptionApiState; 
+/**
+ * The URL clients should call, once the configuration is valid.
+ */
+endpoint_url: string | null; 
+/**
+ * Why the server failed, or why the configuration is not usable.
+ */
+error: string | null; 
+/**
+ * Whether a bearer token exists in the secure store.
+ */
+has_credential: boolean; 
+/**
+ * Whether the configured address is reachable beyond this computer.
+ */
+exposed: boolean }
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 export type VadBackend = "silero" | "earshot"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }

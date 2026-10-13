@@ -38,6 +38,9 @@ use transcribe_rs::{
     SpeechModel, TranscribeOptions,
 };
 
+mod api;
+pub use api::{ApiRequest, ApiRunControl, ApiRunError, ApiTranscript, InferenceGate};
+
 const STREAM_PERF_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -273,6 +276,18 @@ pub struct TranscriptionManager {
     /// yet. This prevents a second worker from starting after finalize/cancel
     /// closes the router but before the first worker has fully exited.
     active_stream_worker: Arc<AtomicU64>,
+    /// Arbitrates the engine between dictation and the optional API server;
+    /// see [`api`].
+    gate: Arc<InferenceGate>,
+    /// An API request loaded a model other than the one selected in Handy, so
+    /// dictation must reload its own model before its next use.
+    api_displaced: Arc<AtomicBool>,
+    /// Until this time (ms since epoch) the API keep-warm window holds the
+    /// model loaded, whatever the idle policy says.
+    api_warm_until_ms: Arc<AtomicU64>,
+    /// "Unload immediately" skipped an unload because of the keep-warm
+    /// window; the idle watcher releases the model once it ends.
+    api_warm_unload_pending: Arc<AtomicBool>,
 }
 
 impl TranscriptionManager {
@@ -293,6 +308,10 @@ impl TranscriptionManager {
             stream_active: Arc::new(AtomicBool::new(false)),
             next_stream_worker_id: Arc::new(AtomicU64::new(1)),
             active_stream_worker: Arc::new(AtomicU64::new(0)),
+            gate: Arc::new(InferenceGate::default()),
+            api_displaced: Arc::new(AtomicBool::new(false)),
+            api_warm_until_ms: Arc::new(AtomicU64::new(0)),
+            api_warm_unload_pending: Arc::new(AtomicBool::new(false)),
         };
 
         // Start the idle watcher
@@ -316,7 +335,16 @@ impl TranscriptionManager {
                     // Skip Immediately — that variant is handled by
                     // maybe_unload_immediately() after each transcription.
                     // Treating it as 0s here would unload the model mid-recording.
+                    // The one exception: a model the API server kept warm past
+                    // such an unload is released here when its window ends.
                     if timeout == ModelUnloadTimeout::Immediately {
+                        manager_cloned.release_api_warm_model();
+                        continue;
+                    }
+
+                    // The API keep-warm window and any running API request
+                    // hold the model regardless of the idle timeout.
+                    if manager_cloned.api_keep_warm_active() || manager_cloned.gate.api_active() {
                         continue;
                     }
 
@@ -447,6 +475,9 @@ impl TranscriptionManager {
     /// Unload the model. Returns once the transcribe-cpp worker has exited,
     /// which frees all of its memory (e.g. before its file is deleted).
     pub fn unload_model(&self) -> Result<()> {
+        // Wait for an API request in flight; it must not lose its model.
+        let _desktop = self.gate.enter_desktop();
+        self.api_warm_until_ms.store(0, Ordering::Release);
         let unload_start = std::time::Instant::now();
         debug!("Starting to unload model");
         self.begin_unload().wait();
@@ -461,6 +492,10 @@ impl TranscriptionManager {
     /// exit, so it never blocks the caller (e.g. the event loop) behind a
     /// transcription in progress. The model reads as unloaded at once.
     pub fn request_unload(&self) {
+        // An explicit unload ends any API keep-warm window. A request already
+        // running finishes first: the engine finishes its current run before
+        // it unloads.
+        self.api_warm_until_ms.store(0, Ordering::Release);
         drop(self.begin_unload());
     }
 
@@ -510,6 +545,13 @@ impl TranscriptionManager {
         if settings.model_unload_timeout == ModelUnloadTimeout::Immediately
             && self.is_model_loaded()
         {
+            if self.api_keep_warm_active() || self.gate.api_active() {
+                // The API server asked for the model to stay warm. The idle
+                // watcher releases it once the window ends.
+                debug!("Keeping model loaded for the API server after {}", context);
+                self.api_warm_unload_pending.store(true, Ordering::Release);
+                return;
+            }
             info!("Immediately unloading model after {}", context);
             self.request_unload();
         }
@@ -529,6 +571,26 @@ impl TranscriptionManager {
         model_id: &str,
         device_index: Option<usize>,
     ) -> Result<()> {
+        // A model switch must wait for an API request that is using the engine.
+        let desktop = self.gate.enter_desktop();
+        if desktop.waited_for_api
+            && device_index.is_none()
+            && self.get_current_model().as_deref() == Some(model_id)
+            && self.is_model_loaded()
+            && !self.reload_model_on_next_use.load(Ordering::Acquire)
+        {
+            // The request we waited for left exactly this model loaded.
+            return Ok(());
+        }
+        self.load_model_inner(model_id, device_index)?;
+        if get_settings(&self.app_handle).selected_model == model_id {
+            self.api_displaced.store(false, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    /// The load itself. The caller holds an [`InferenceGate`] permit.
+    fn load_model_inner(&self, model_id: &str, device_index: Option<usize>) -> Result<()> {
         apply_accelerator_settings(&self.app_handle);
 
         let load_start = std::time::Instant::now();
@@ -780,7 +842,10 @@ impl TranscriptionManager {
             return;
         }
 
-        let reload_pending = self.reload_model_on_next_use.load(Ordering::Acquire);
+        // The API server may have swapped in a different model; dictation
+        // reloads its own, like after an accelerator change.
+        let reload_pending = self.reload_model_on_next_use.load(Ordering::Acquire)
+            || self.api_displaced.load(Ordering::Acquire);
         if !reload_pending && self.is_model_loaded() {
             return;
         }
@@ -792,6 +857,7 @@ impl TranscriptionManager {
                 self_clone
                     .reload_model_on_next_use
                     .store(false, Ordering::Release);
+                self_clone.api_displaced.store(false, Ordering::Release);
             }
             let settings = get_settings(&self_clone.app_handle);
             if let Err(e) = self_clone.load_model(&settings.selected_model) {
@@ -868,6 +934,9 @@ impl TranscriptionManager {
             active_stream_worker: Arc::clone(&self.active_stream_worker),
             stream_active: Arc::clone(&self.stream_active),
         };
+        // Dictation has priority over the API server: hold the engine for the
+        // whole stream, after any API request already running has finished.
+        let _desktop = self.gate.enter_desktop();
 
         // Wait for any in-progress model load to finish (start_stream races the
         // background load kicked off when recording starts).
@@ -1133,6 +1202,10 @@ impl TranscriptionManager {
             ));
         }
 
+        // Dictation has priority over the API server: wait for an API request
+        // already running, and keep new ones out until this finishes.
+        let _desktop = self.gate.enter_desktop();
+
         // Update last activity timestamp
         self.touch_activity();
 
@@ -1145,6 +1218,15 @@ impl TranscriptionManager {
             debug!("Empty audio vector");
             self.maybe_unload_immediately("empty audio");
             return Ok(String::new());
+        }
+
+        // An API request may have swapped in another model since this
+        // recording began; use the one selected in Handy.
+        if self.api_displaced.swap(false, Ordering::AcqRel) {
+            let selected = get_settings(&self.app_handle).selected_model;
+            if !selected.is_empty() && self.get_current_model().as_deref() != Some(&selected) {
+                self.load_model_inner(&selected, None)?;
+            }
         }
 
         // Check if model is loaded, if not try to load it

@@ -24,6 +24,7 @@ import { LazyStreamClose } from "../LazyStreamClose";
 import { FillerWordRemoval } from "../FillerWordRemoval";
 import { ChineseScriptSetting } from "../ChineseScript";
 import { VadBackendSelector } from "../VadBackendSelector";
+import { TranscriptionApiSettings } from "../TranscriptionApiSettings";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -62,6 +63,10 @@ export const AdvancedSettings: React.FC = () => {
           descriptionMode="tooltip"
           grouped={true}
         />
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.advanced.groups.api")}>
+        <TranscriptionApiSettings descriptionMode="tooltip" grouped={true} />
       </SettingsGroup>
 
       {experimentalEnabled && (

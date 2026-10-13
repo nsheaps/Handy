@@ -264,7 +264,8 @@
         "output": "Salida",
         "transcription": "Transcripción",
         "history": "Historial",
-        "experimental": "Experimental"
+        "experimental": "Experimental",
+        "api": "Transcription API"
       },
       "experimentalToggle": {
         "label": "Funciones experimentales",
@@ -406,6 +407,54 @@
           "asTranscribed": "Tal como se transcribió",
           "simplified": "Simplificado",
           "traditional": "Tradicional"
+        }
+      },
+      "transcriptionApi": {
+        "enable": {
+          "label": "Enable transcription API server",
+          "description": "Serve an OpenAI-compatible transcription endpoint from this app so other programs can use Handy's local models. Off by default."
+        },
+        "status": {
+          "label": "Server status",
+          "disabled": "Disabled",
+          "starting": "Starting",
+          "running": "Running",
+          "stopping": "Stopping",
+          "failed": "Failed"
+        },
+        "stayRunning": "Handy must stay running for the endpoint to be available. It is not a background service.",
+        "endpoint": {
+          "label": "Endpoint URL",
+          "description": "Send POST requests with a multipart file and model to this URL, with the bearer token in the Authorization header."
+        },
+        "copy": "Copy",
+        "copied": "Copied",
+        "binding": {
+          "label": "Address and port",
+          "description": "Defaults to 127.0.0.1 (this computer only). Changing the address or port restarts the server.",
+          "address": "Bind address",
+          "port": "Port",
+          "apply": "Apply"
+        },
+        "invalidPort": "Enter a port between 1 and 65535.",
+        "exposedWarning": "This address is reachable from other devices on your network. Anyone with the token can transcribe audio using this computer. Traffic is not encrypted.",
+        "confirm": {
+          "title": "Listen beyond this computer?",
+          "body": "Handy will accept connections on {{address}} from other devices. They still need the bearer token, but the connection is not encrypted.",
+          "accept": "Listen on this address",
+          "cancel": "Cancel"
+        },
+        "token": {
+          "label": "Bearer token",
+          "description": "Required for every request, including from this computer. Stored in your operating system's credential store.",
+          "reveal": "Reveal token",
+          "hide": "Hide",
+          "rotate": "Generate new token"
+        },
+        "keepWarm": {
+          "label": "Keep model loaded after requests",
+          "description": "How long the model stays loaded after the last API request, even when Handy is set to unload models immediately. 0 follows the desktop setting.",
+          "unit": "seconds"
         }
       }
     },
