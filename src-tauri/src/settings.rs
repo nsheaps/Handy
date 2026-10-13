@@ -544,6 +544,51 @@ pub struct AppSettings {
     /// `overlay_position` (position `none` → style `None`).
     #[serde(default = "default_overlay_style")]
     pub overlay_style: OverlayStyle,
+    /// Optional OpenAI-compatible transcription HTTP server. Off by default
+    /// for fresh installs and for stores written before it existed. The bearer
+    /// token is deliberately not part of settings: it lives in the OS
+    /// credential store (see `transcription_api::auth`).
+    #[serde(default)]
+    pub transcription_api: TranscriptionApiSettings,
+}
+
+/// Default port of the transcription API server: an arbitrary unregistered,
+/// non-privileged port below every OS's ephemeral range, so it is unlikely to
+/// collide with another listener or an outbound connection's local port.
+pub const DEFAULT_TRANSCRIPTION_API_PORT: u16 = 24639;
+
+/// How long the model stays warm after the last API request when the desktop
+/// unload policy would otherwise unload it at once.
+pub const DEFAULT_TRANSCRIPTION_API_KEEP_WARM_SECS: u64 = 300;
+
+/// Persisted, non-secret configuration of the transcription API server.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Type)]
+#[serde(default)]
+pub struct TranscriptionApiSettings {
+    /// Whether the server runs while Handy is running. Defaults to `false`.
+    pub enabled: bool,
+    /// IP literal to listen on. Defaults to loopback.
+    pub bind_address: String,
+    pub port: u16,
+    /// The user's explicit confirmation that listening beyond loopback is
+    /// intended. A non-loopback `bind_address` is refused without it.
+    pub allow_non_loopback: bool,
+    /// Seconds the model stays loaded after the last API request when the
+    /// desktop "unload immediately" policy is active. `0` follows the desktop
+    /// policy exactly.
+    pub keep_warm_secs: u64,
+}
+
+impl Default for TranscriptionApiSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: "127.0.0.1".to_string(),
+            port: DEFAULT_TRANSCRIPTION_API_PORT,
+            allow_non_loopback: false,
+            keep_warm_secs: DEFAULT_TRANSCRIPTION_API_KEEP_WARM_SECS,
+        }
+    }
 }
 
 fn default_model() -> String {
@@ -1027,6 +1072,7 @@ pub fn get_default_settings() -> AppSettings {
         vad_enabled: default_vad_enabled(),
         vad_backend: VadBackend::default(),
         overlay_style: default_overlay_style(),
+        transcription_api: TranscriptionApiSettings::default(),
     }
 }
 
@@ -1256,6 +1302,14 @@ fn apply_settings_migrations(
         } else {
             OverlayStyle::Live
         };
+        updated = true;
+    }
+
+    // One-time transcription API migration (only while the key is absent):
+    // existing installations get the server explicitly switched off, so
+    // upgrading can never open a listener the user did not ask for.
+    if settings_value.get("transcription_api").is_none() {
+        settings.transcription_api = TranscriptionApiSettings::default();
         updated = true;
     }
 
@@ -1616,6 +1670,39 @@ mod tests {
     }
 
     #[test]
+    fn transcription_api_defaults_to_off_on_loopback() {
+        let api = get_default_settings().transcription_api;
+        assert!(!api.enabled);
+        assert_eq!(api.bind_address, "127.0.0.1");
+        assert_eq!(api.port, DEFAULT_TRANSCRIPTION_API_PORT);
+        assert!(!api.allow_non_loopback);
+    }
+
+    #[test]
+    fn legacy_store_without_transcription_api_loads_with_server_off() {
+        // A store written before the feature existed has no such key.
+        let raw = serde_json::json!({ "selected_model": "small", "onboarding_completed": true });
+        let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
+        assert!(!settings.transcription_api.enabled);
+
+        assert!(apply_settings_migrations(&mut settings, &raw));
+        assert_eq!(
+            settings.transcription_api,
+            TranscriptionApiSettings::default()
+        );
+    }
+
+    #[test]
+    fn partial_transcription_api_store_keeps_unset_fields_at_safe_defaults() {
+        let raw = serde_json::json!({ "transcription_api": { "enabled": true, "port": 9000 } });
+        let settings: AppSettings = serde_json::from_value(raw).unwrap();
+        assert!(settings.transcription_api.enabled);
+        assert_eq!(settings.transcription_api.port, 9000);
+        assert_eq!(settings.transcription_api.bind_address, "127.0.0.1");
+        assert!(!settings.transcription_api.allow_non_loopback);
+    }
+
+    #[test]
     fn legacy_none_overlay_position_deserializes_to_bottom() {
         // A persisted "none" must not fail the whole settings load; the serde
         // alias folds it onto Bottom (visibility is owned by overlay_style).
@@ -1785,7 +1872,8 @@ mod tests {
             "overlay_style": "live",
             "chinese_script": "as_transcribed",
             "transcribe_accelerator": "gpu",
-            "transcribe_gpu_device": settings.transcribe_gpu_device
+            "transcribe_gpu_device": settings.transcribe_gpu_device,
+            "transcription_api": {}
         });
 
         assert!(!apply_settings_migrations(&mut settings, &raw));

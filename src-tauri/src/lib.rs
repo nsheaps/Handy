@@ -22,6 +22,7 @@ mod secure_input;
 mod settings;
 mod shortcut;
 mod signal_handle;
+mod transcription_api;
 mod transcription_coordinator;
 mod tray;
 mod tray_i18n;
@@ -216,6 +217,19 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(tray::TrayState::new());
+
+    // The optional transcription API server. Created for every normal launch
+    // so the settings UI can configure it, but it only listens if the user
+    // enabled it. Started off the UI thread so a slow credential store or
+    // port bind never delays startup.
+    let api_manager = transcription_api::TranscriptionApiManager::new(
+        app_handle.clone(),
+        transcription_manager.clone(),
+    );
+    app_handle.manage(api_manager.clone());
+    tauri::async_runtime::spawn(async move {
+        api_manager.initialize().await;
+    });
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -769,11 +783,18 @@ pub fn run(cli_args: CliArgs) {
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
             helpers::clamshell::is_laptop,
+            commands::transcription_api::get_transcription_api_status,
+            commands::transcription_api::set_transcription_api_enabled,
+            commands::transcription_api::set_transcription_api_binding,
+            commands::transcription_api::set_transcription_api_keep_warm_secs,
+            commands::transcription_api::reveal_transcription_api_token,
+            commands::transcription_api::rotate_transcription_api_token,
         ])
         .events(collect_events![
             managers::history::HistoryUpdatePayload,
             managers::transcription::StreamTextEvent,
             managers::transcription::StreamPhaseEvent,
+            transcription_api::TranscriptionApiStatus,
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
@@ -1119,6 +1140,12 @@ pub fn run(cli_args: CliArgs) {
                 tray::recreate_tray_icon(app);
             }
             show_main_window(app);
+        }
+        tauri::RunEvent::Exit => {
+            // Stop admitting API requests and release the port.
+            if let Some(api) = app.try_state::<Arc<transcription_api::TranscriptionApiManager>>() {
+                api.shutdown();
+            }
         }
         // No transcription teardown on exit: transcribe.cpp runs only in the
         // worker process, which exits by itself as soon as this process's end

@@ -48,12 +48,15 @@ anyhow = "1.0.95"
 hound = "3.5.1"
 log = "0.4.25"
 env_filter = "0.1.0"
-tokio = "1.43.0"
+tokio = { version = "1.43.0", features = ["net", "sync", "time", "rt"] }
 earshot = "1.2.2"
 enigo = "0.6.1"
 # Feedback sounds. No `recording`: microphone capture is handy-recorder's.
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "flac", "mp3", "vorbis"] }
 handy-recorder = "0.1"
+# Resamples uploaded audio to the models' 16 kHz. Pinned to the version
+# handy-recorder links so only one copy is built.
+rubato = "=5.0.0"
 reqwest = { version = "0.12", features = ["json", "stream", "gzip", "brotli", "deflate"] }
 futures-util = "0.3"
 rustfft = "6.4.0"
@@ -78,6 +81,11 @@ transcribe-rs = { version = "0.3.8", features = ["onnx"] }
 transcribe-cpp = { version = "0.4.0", default-features = false, features = [
   "serde",
 ] }
+# Optional OpenAI-compatible transcription API server (see transcription_api/).
+# No default features: only HTTP/1.1 over tokio, JSON and multipart are needed.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "multipart"] }
+# High-entropy bearer-token generation (OS CSPRNG).
+getrandom = "0.3"
 handy-keys = "0.3.4"
 ferrous-opencc = "0.2.3"
 clap = { version = "4", features = ["derive"] }
@@ -99,6 +107,9 @@ tauri-plugin-single-instance = "2.3.2"
 tauri-plugin-updater = "2.10.1"
 
 [target.'cfg(windows)'.dependencies]
+# The API server's bearer token lives in the OS credential store, never in the
+# settings file.
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
 # Used to reach ICoreWebView2Settings3 through the webview's controller
 # (disabling browser accelerator keys in the main window). Must match the
 # version wry links against so the COM types are identical.
@@ -149,6 +160,9 @@ transcribe-cpp = { version = "0.4.0", default-features = false, features = [
 transcribe-cpp = { version = "0.4.0", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The API server's bearer token lives in the OS credential store, never in the
+# settings file.
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
 transcribe-cpp = { version = "0.4.0", default-features = false, features = ["metal"] }
 # Used by the receipt-sequenced ("reliable") paste path for lazy NSPasteboard
@@ -159,6 +173,10 @@ objc2-app-kit = "0.3"
 objc2-service-management = "0.3.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The API server's bearer token lives in the OS credential store, never in the
+# settings file. Secret Service runs over pure-Rust D-Bus
+# (no libdbus link-time dependency).
+keyring = { version = "3", default-features = false, features = ["async-secret-service", "tokio", "crypto-rust"] }
 gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
 gtk = "0.18"
 transcribe-cpp = { version = "0.4.0", default-features = false, features = [
